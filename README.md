@@ -1,13 +1,11 @@
 # study_lanchain
 
-설치 및 테스트 방법
-
-Hugging Face와 ollama를 통해 설치 방법은 다음과 같다.
+## 설치 및 테스트 방법
+`Hugging Face와 ollama를 통해 설치 방법은 다음과 같다.`
 
 1. gguf 모델 다운로드 
 
 gguf 모델 다운로드
-
 https://huggingface.co/QuantFactory/Meta-Llama-3-8B-Instruct-GGUF/tree/main  
 
 

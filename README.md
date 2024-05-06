@@ -17,7 +17,7 @@ Meta-Llama-3-8B-Instruct.Q5_1.gguf
 
 
 2. Modelfile 생성
-
+```
 FROM Meta-Llama-3-8B-Instruct.Q8_0.gguf
 
 TEMPLATE """{{- if .System }}
@@ -36,6 +36,7 @@ PARAMETER stop <|begin_of_text|>
 PARAMETER stop <|end_of_text|>
 PARAMETER stop <|eot_id|>
 PARAMETER stop <|end_of_text|>
+```
 
 3. Ollama 모델 생성 및 확인
 
@@ -52,8 +53,6 @@ ollama run llama3-instruct-8b
 일단 한글은 파인튜닝되지 않아, 정확하지 않았으나,
 
 영어로 물어본 것에 대해서는 8B 모델이라도 매우 훌륭하다. (php오류를 찾아 물어봤더니 굉장히 정확히 찾았다)
-
-
 
 
 

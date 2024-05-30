@@ -58,7 +58,7 @@ file_queue = Queue()
 
 # FAISS 벡터 저장소 초기화
 embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
-dimension = len(embeddings.embed_query("test")[0])
+dimension = len(embeddings.embed_query("test"))
 index = faiss.IndexFlatL2(dimension)
 
 if os.path.exists(FAISS_INDEX_PATH):

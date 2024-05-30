@@ -54,7 +54,7 @@ else:
     processed_files = {}
 
 # 큐 설정
-file_queue = Queue()
+file_queue = asyncio.Queue()
 
 # FAISS 벡터 저장소 초기화
 embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
@@ -63,7 +63,7 @@ index = faiss.IndexFlatL2(dimension)
 
 if os.path.exists(FAISS_INDEX_PATH):
     try:
-        vector_store = FAISS.load_local(FAISS_INDEX_PATH, embeddings)
+        vector_store = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
         logging.info("Loaded FAISS index from disk.")
     except Exception as e:
         logging.error(f"Failed to load FAISS index: {e}")
@@ -76,11 +76,11 @@ class ResumeHandler(FileSystemEventHandler):
         if event.is_directory:
             return None
         elif event.src_path.endswith(".pdf"):
-            file_queue.put(event.src_path)
+            asyncio.run_coroutine_threadsafe(file_queue.put(event.src_path), loop)
 
 async def process_files_from_queue():
     while True:
-        file_path = file_queue.get()
+        file_path = await file_queue.get()
         if file_path is None:
             break
         await process_resume(file_path)
@@ -93,7 +93,7 @@ async def process_resume(file_path):
         logging.info(f"File {file_path} has already been processed.")
         return
 
-    analysis_result = await analyze_resume_with_langchain(file_path)
+    analysis_result = analyze_resume_with_langchain(file_path)  # 동기 호출로 변경
     if analysis_result:
         update_excel_with_result(analysis_result)
         await update_faiss_with_result(analysis_result)
@@ -113,7 +113,7 @@ def save_hash_records():
     with open(HASH_RECORD_PATH, "w") as f:
         json.dump(processed_files, f)
 
-async def analyze_resume_with_langchain(file_path):
+def analyze_resume_with_langchain(file_path):  # 비동기에서 동기로 변경
     resume_text = extract_text_from_pdf(file_path)
 
     # LangChain 사용하여 텍스트 분석
@@ -147,7 +147,7 @@ async def analyze_resume_with_langchain(file_path):
             | JsonOutputParser()
     )
 
-    result = chain.invoke({"RESUME_TEXT": resume_text})
+    result = chain.invoke({"RESUME_TEXT": resume_text})  # 비동기에서 동기로 변경
     if isinstance(result, dict):
         logging.info(f"Processed resume: {result}")
         return result
@@ -215,7 +215,8 @@ if __name__ == "__main__":
     observer.start()
 
     # 파일 처리 스레드 시작
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     processing_thread = threading.Thread(target=lambda: loop.run_until_complete(process_files_from_queue()), daemon=True)
     processing_thread.start()
 
@@ -224,6 +225,6 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
-        file_queue.put(None)  # 큐를 종료하기 위해 None 추가
+        asyncio.run(file_queue.put(None))  # 큐를 종료하기 위해 None 추가
         processing_thread.join()
     observer.join()

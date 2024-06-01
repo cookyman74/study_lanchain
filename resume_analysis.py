@@ -4,7 +4,6 @@ import json
 import hashlib
 import threading
 import logging
-from queue import Queue
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
@@ -28,11 +27,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 # 환경 변수 사용
 openai_api_key = os.getenv('OPENAI_API_KEY')
-db_user = os.getenv('DB_USER')
-db_password = os.getenv('DB_PASSWORD')
-db_host = os.getenv('DB_HOST')
-db_name = os.getenv('DB_NAME')
-
 directory_to_watch = os.getenv('DIRECTORY_TO_WATCH')
 excel_file_path = os.getenv('EXCEL_FILE_PATH')
 hash_record_path = os.getenv('HASH_RECORD_PATH')
@@ -93,14 +87,19 @@ async def process_resume(file_path):
         logging.info(f"File {file_path} has already been processed.")
         return
 
-    analysis_result = analyze_resume_with_langchain(file_path)  # 동기 호출로 변경
-    if analysis_result:
-        update_excel_with_result(analysis_result)
-        await update_faiss_with_result(analysis_result)
-        processed_files[file_hash] = file_path
-        save_hash_records()
+    file_info = parse_filename(file_path)
+    if file_info:
+        combined_text = extract_text_from_combined_files(file_info['applicant_name'])
+        analysis_result = analyze_resume_with_langchain(combined_text, file_info)
+        if analysis_result:
+            update_excel_with_result(analysis_result)
+            await update_faiss_with_result(analysis_result)
+            processed_files[file_hash] = file_path
+            save_hash_records()
+        else:
+            logging.error(f"Error processing file {file_path}.")
     else:
-        logging.error(f"Error processing file {file_path}.")
+        logging.error(f"Error parsing filename {file_path}.")
 
 def calculate_file_hash(file_path):
     hasher = hashlib.sha256()
@@ -113,27 +112,67 @@ def save_hash_records():
     with open(HASH_RECORD_PATH, "w") as f:
         json.dump(processed_files, f)
 
-def analyze_resume_with_langchain(file_path):  # 비동기에서 동기로 변경
-    resume_text = extract_text_from_pdf(file_path)
+def parse_filename(file_path):
+    filename = os.path.basename(file_path)
+    parts = filename.split('_')
 
-    # LangChain 사용하여 텍스트 분석
+    document_type = parts[0].split(')')[0].strip('(')
+    applicant_name = parts[0].split(')')[1].strip('(')
+    application_route = parts[1]
+    date = parts[2]
+    team_info = parts[3].split()
+    team_name = team_info[0]
+    if len(team_info) > 1:
+        part_name = team_info[-2]
+        position = team_info[-1]
+        print("hhhhhh: ", position)
+    else:
+        part_name = ""
+        position = ""
+
+    return {
+        'document_type': document_type,
+        'applicant_name': applicant_name,
+        'application_route': application_route,
+        'date': date,
+        'team_name': team_name,
+        'part_name': part_name,
+        'position': position
+    }
+
+def extract_text_from_combined_files(applicant_name):
+    directory = os.listdir(DIRECTORY_TO_WATCH)
+    combined_text = ""
+    for file in directory:
+        if applicant_name in file and file.endswith(".pdf"):
+            file_path = os.path.join(DIRECTORY_TO_WATCH, file)
+            combined_text += extract_text_from_pdf(file_path) + "\n\n"
+    return combined_text
+
+def analyze_resume_with_langchain(resume_text, file_info):
     prompt = ChatPromptTemplate.from_template(
         """
         이력서 내용: {RESUME_TEXT}
-        이력서에서 다음 정보를 추출하고 JSON 형식으로 반환하세요.
+        이력서에서 다음 정보를 추출하여 요약해줘. 요약할 때 지원자의 특징이 잘 표현될 수 있도록 풍부하게 요약해줘. 그리고 마지막으로 JSON 형식으로 반환하세요.
         - 지원자 이름
         - 나이
         - 경력
         - 핵심기술력
         - 특징
+        - 지원팀명
+        - 지원파트
+        - 직급
 
         JSON 형식 예시:
         {{
             "지원자 이름": "홍길동",
             "나이": "30",
+            "지원팀명": "하이브리드 플랫폼팀",
+            "지원파트": "백앤드 개발",
+            "직급": "수석",
             "경력": "10년",
             "핵심기술력": "Python, Machine Learning",
-            "특징": "팀 리더 경험"
+            "특징": "개발능력이 우수하고 팀 리더 경험이 풍부하다."
         }}
         """
     )
@@ -147,8 +186,14 @@ def analyze_resume_with_langchain(file_path):  # 비동기에서 동기로 변�
             | JsonOutputParser()
     )
 
-    result = chain.invoke({"RESUME_TEXT": resume_text})  # 비동기에서 동기로 변경
+    result = chain.invoke({
+        "RESUME_TEXT": resume_text + '"지원자 이름":' + file_info['applicant_name']
+                       + ', "지원팀명":' + file_info['team_name']
+                       + ', "지원파트":' + file_info['part_name']
+                       + ', "직급":' + file_info['position']
+    })
     if isinstance(result, dict):
+        result.update(file_info)  # 파일 정보를 결과에 추가
         logging.info(f"Processed resume: {result}")
         return result
     else:
@@ -172,24 +217,27 @@ def update_excel_with_result(result):
         else:
             workbook = Workbook()
             sheet = workbook.active
-            sheet.append(["지원자 이름", "나이", "경력", "핵심기술력", "특징"])  # 헤더 추가
+            sheet.append(["지원자 이름", "나이", "지원팀명", "지원파트", "직급", "경력", "핵심기술력", "특징"])  # 헤더 추가
 
         sheet = workbook.active
         # JSON 데이터를 문자열로 변환하여 저장
         name = result.get("지원자 이름", "")
         age = result.get("나이", "")
+        team_name = result.get("지원팀명", "")
+        part_name = result.get("지원파트", "")
+        position = result.get("직급", "")
         experience = result.get("경력", "")
         skills = result.get("핵심기술력", "")
         characteristics = result.get("특징", "")
 
-        sheet.append([name, age, experience, skills, characteristics])
+        sheet.append([name, age, team_name, part_name, position, experience, skills, characteristics])
         workbook.save(EXCEL_FILE_PATH)
 
 def update_csv_with_result(result):
     # CSV 파일 업데이트
     file_exists = os.path.exists(CSV_FILE_PATH)
     with open(CSV_FILE_PATH, mode='a', newline='', encoding='utf-8') as file:
-        writer = csv.DictWriter(file, fieldnames=["지원자 이름", "나이", "경력", "핵심기술력", "특징"])
+        writer = csv.DictWriter(file, fieldnames=["지원자 이름", "나이", "지원팀명", "지원파트", "직급", "경력", "핵심기술력", "특징"])
         if not file_exists:
             writer.writeheader()
         writer.writerow(result)
@@ -199,7 +247,7 @@ async def update_faiss_with_result(result):
     with lock:
         # FAISS 벡터 저장소 업데이트
         documents = [
-            Document(page_content=f"지원자 이름: {result.get('지원자 이름', '')}\n나이: {result.get('나이', '')}\n경력: {result.get('경력', '')}\n핵심기술력: {result.get('핵심기술력', '')}\n특징: {result.get('특징', '')}", metadata={"file": result.get("지원자 이름", "")})
+            Document(page_content=f"지원자 이름: {result.get('지원자 이름', '')}\n나이: {result.get('나이', '')}\n경력: {result.get('경력', '')}\n핵심기술력: {result.get('핵심기술력', '')}\n특징: {result.get('특징', '')}\n지원팀명: {result.get('지원팀명', '')}\n지원파트: {result.get('지원파트', '')}\n직급: {result.get('직급', '')}", metadata={"file": result.get("지원자 이름", "")})
         ]
         await vector_store.aadd_documents(documents)
         try:
